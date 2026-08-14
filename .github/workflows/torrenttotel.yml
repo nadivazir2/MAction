@@ -1,0 +1,313 @@
+name: Torrent To Telegram
+
+on:
+  workflow_dispatch:
+    inputs:
+      magnet:
+        description: "Magnet Link"
+        required: true
+      
+      package_name:
+        description: "Name of the Package"
+        required: true
+      
+      wanted_files:
+        description: "Files to download (one per line)"
+        required: false
+
+      excluded_files:
+        description: "Files to exclude (one per line)"
+        required: false
+
+      split_size:
+        description: "Archive split size (example: 1900m)"
+        required: true
+        default: "40m"
+
+jobs:
+  torrent:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install packages
+        run: |
+
+          sudo apt update
+
+          sudo apt install -y \
+            aria2 \
+            p7zip-full \
+            curl \
+            jq
+
+      - name: Prepare folders
+        run: |
+
+          mkdir -p downloads
+
+      - name: Fetch torrent metadata
+        run: |
+
+          aria2c \
+            --bt-metadata-only=true \
+            --bt-save-metadata=true \
+            --dir=downloads \
+            "${{ github.event.inputs.magnet }}"
+
+      - name: Find torrent file
+        run: |
+
+          TORRENT_FILE=$(find downloads -name "*.torrent" | head -n 1)
+
+          echo "TORRENT_FILE=$TORRENT_FILE" >> $GITHUB_ENV
+
+          echo "Torrent file:"
+          echo "$TORRENT_FILE"
+
+      - name: Show torrent files
+        run: |
+
+          aria2c --show-files "${{ env.TORRENT_FILE }}" | tee files.txt
+
+      - name: Build download file list
+        shell: bash
+        run: |
+
+          > selected_indexes.txt
+
+          ALL_INDEXES=$(
+            awk '
+            /^[[:space:]]*[0-9]+\|/ {
+
+              split($0,a,"|")
+
+              idx=a[1]
+
+              gsub(/^[ \t]+|[ \t]+$/, "", idx)
+
+              print idx
+
+            }' files.txt
+          )
+
+          for IDX in $ALL_INDEXES
+          do
+            echo "$IDX" >> selected_indexes.txt
+          done
+
+          # wanted_files
+          if [ -n "${{ github.event.inputs.wanted_files }}" ]; then
+
+            > selected_indexes.txt
+
+            IFS=':' read -ra TARGETS <<< "${{ github.event.inputs.wanted_files }}"
+
+            for TARGET_FILE in "${TARGETS[@]}"
+            do
+
+              TARGET_FILE=$(echo "$TARGET_FILE" | xargs)
+
+              [ -z "$TARGET_FILE" ] && continue
+
+              FILE_INDEX=$(
+                awk -v target="$TARGET_FILE" '
+                /^[[:space:]]*[0-9]+\|/ {
+
+                  split($0,a,"|")
+
+                  idx=a[1]
+                  name=a[2]
+
+                  gsub(/^[ \t]+|[ \t]+$/, "", idx)
+                  gsub(/^[ \t]+|[ \t]+$/, "", name)
+
+                  if (tolower(name) ~ tolower(target)) {
+                    print idx
+                    exit
+                  }
+
+                }' files.txt
+              )
+
+              if [ -n "$FILE_INDEX" ]; then
+
+                echo "$FILE_INDEX" >> selected_indexes.txt
+
+              else
+
+                echo "File not found: $TARGET_FILE"
+
+              fi
+
+            done
+
+          fi
+
+          # excluded_files
+          if [ -n "${{ github.event.inputs.excluded_files }}" ]; then
+
+            IFS=':' read -ra TARGETS <<< "${{ github.event.inputs.excluded_files }}"
+
+            for TARGET_FILE in "${TARGETS[@]}"
+            do
+
+              TARGET_FILE=$(echo "$TARGET_FILE" | xargs)
+
+              [ -z "$TARGET_FILE" ] && continue
+
+              EXCLUDED=$(
+                awk -v target="$TARGET_FILE" '
+                /^[[:space:]]*[0-9]+\|/ {
+
+                  split($0,a,"|")
+
+                  idx=a[1]
+                  name=a[2]
+
+                  gsub(/^[ \t]+|[ \t]+$/, "", idx)
+                  gsub(/^[ \t]+|[ \t]+$/, "", name)
+
+                  if (tolower(name) ~ tolower(target)) {
+                    print idx
+                  }
+
+                }' files.txt
+              )
+
+              for IDX in $EXCLUDED
+              do
+
+                sed -i "/^${IDX}$/d" selected_indexes.txt
+
+              done
+
+            done
+
+          fi
+
+          SELECTED=$(sort -n selected_indexes.txt | uniq | paste -sd,)
+
+          echo "SELECTED_FILES=$SELECTED" >> $GITHUB_ENV
+
+          echo ""
+          echo "Selected indexes:"
+          echo "$SELECTED"
+
+          if [ -z "$SELECTED" ]; then
+
+            echo "No files selected."
+            exit 1
+
+          fi
+
+      - name: Download selected files
+        run: |
+
+          aria2c \
+            --dir=downloads \
+            --seed-time=0 \
+            --enable-dht=true \
+            --bt-enable-lpd=true \
+            --bt-save-metadata=true \
+            --bt-tracker-connect-timeout=30 \
+            --max-tries=10 \
+            --retry-wait=5 \
+            --continue=true \
+            --summary-interval=5 \
+            --select-file="${{ env.SELECTED_FILES }}" \
+            "${{ env.TORRENT_FILE }}"
+
+      - name: Show downloaded files
+        run: |
+
+          echo "Downloaded Files:"
+          ls -lah downloads
+
+          echo ""
+          echo "Disk Usage:"
+          du -sh downloads
+
+      - name: Compress and split
+        run: |
+          mkdir output
+
+          7z a \
+            -v${{ github.event.inputs.split_size }} \
+            output/${{ github.event.inputs.package_name }}.$(date +%Y%m%d_%H%M%S).7z \
+            ./downloads/*
+
+      - name: Upload to Telegram
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+        shell: bash
+        run: |
+
+          for file in output/*
+          do
+
+            echo ""
+            echo "================================="
+            echo "Uploading: $file"
+            echo "================================="
+
+            SUCCESS=0
+
+            while [ $SUCCESS -eq 0 ]
+            do
+
+              RESPONSE=$(curl -s \
+                -F document=@"$file" \
+                "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument?chat_id=${CHAT_ID}")
+
+              echo "$RESPONSE"
+
+              OK=$(echo "$RESPONSE" | jq -r '.ok')
+
+              if [ "$OK" = "true" ]; then
+
+                echo ""
+                echo "Upload successful."
+
+                SUCCESS=1
+
+              else
+
+                ERROR_DESC=$(echo "$RESPONSE" | jq -r '.description')
+
+                RETRY_AFTER=$(echo "$RESPONSE" | jq -r '.parameters.retry_after // 10')
+
+                echo ""
+                echo "Upload failed:"
+                echo "$ERROR_DESC"
+
+                echo ""
+                echo "Retrying after ${RETRY_AFTER}s..."
+
+                sleep "$RETRY_AFTER"
+
+              fi
+
+            done
+
+          done
+
+      - name: Cleanup
+        if: always()
+        run: |
+
+          echo "Cleaning temporary files..."
+
+          rm -rf downloads
+          rm -rf output
+
+          rm -f files.txt
+          rm -f selected_indexes.txt
+
+          sudo apt clean
+
+          echo ""
+          echo "Remaining Disk Space:"
+
+          df -h
