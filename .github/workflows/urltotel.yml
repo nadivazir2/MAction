@@ -1,0 +1,141 @@
+name: "دانلود، آرشیو و ارسال به تلگرام"
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_url:
+        description: "Direct File URL"
+        required: true
+        type: string
+
+      zip_password:
+        description: "Password for archive (leave empty for no password)"
+        required: false
+        default: ""
+        type: string
+
+      max_part_mb:
+        description: "Maximum size per part (MB)"
+        required: false
+        default: "20"
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  direct-download:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y p7zip-full curl
+
+      - name: Prepare Directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p temp_dl temp_arch
+
+      - name: Download File
+        id: download
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILE_URL="${{ github.event.inputs.file_url }}"
+
+          FILENAME=$(basename "$FILE_URL" | cut -d'?' -f1)
+          FILENAME=$(echo "$FILENAME" | sed 's/[^a-zA-Z0-9._() -]/_/g')
+
+          if [ -z "$FILENAME" ] || [ "$FILENAME" = "/" ]; then
+            FILENAME="downloaded_file"
+          fi
+
+          echo "Downloading: $FILENAME"
+
+          curl -L --fail --retry 3 \
+            -o "temp_dl/$FILENAME" \
+            "$FILE_URL"
+
+          echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
+          echo "filepath=temp_dl/$FILENAME" >> "$GITHUB_OUTPUT"
+
+      - name: Create Split Archive
+        id: archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FILEPATH="${{ steps.download.outputs.filepath }}"
+          PASS="${{ github.event.inputs.zip_password }}"
+          THRESH_MB="${{ github.event.inputs.max_part_mb }}"
+
+          if [[ -z "$THRESH_MB" || "$THRESH_MB" -le 0 || "$THRESH_MB" -gt 1900 ]]; then
+            THRESH_MB=1800
+          fi
+
+          BASENAME=$(basename "$FILEPATH")
+
+          cd temp_dl || exit 1
+
+          ARCHIVE_BASE="${BASENAME%.*}_$(date +%Y%m%d_%H%M%S)"
+
+          if [ -n "$PASS" ]; then
+            7z a -p"$PASS" -mhe=on -mx=3 -v${THRESH_MB}m "../temp_arch/${ARCHIVE_BASE}.7z" "$BASENAME"
+          else
+            7z a -mx=3 -v${THRESH_MB}m "../temp_arch/${ARCHIVE_BASE}.7z" "$BASENAME"
+          fi
+
+          echo "archive_base=$ARCHIVE_BASE" >> "$GITHUB_OUTPUT"
+
+      - name: List Archive Files
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Archive files created:"
+          ls -lah temp_arch
+
+      - name: Send files to Telegram
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          FILES=(temp_arch/*)
+
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No archive files found in temp_arch."
+            exit 1
+          fi
+
+          for file in "${FILES[@]}"; do
+            echo "Sending $file ..."
+            RESPONSE=$(curl -sS -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument" \
+              -F chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+              -F document=@"$file" \
+              -F caption="Archive: $(basename "$file")")
+
+            echo "$RESPONSE"
+
+            if ! echo "$RESPONSE" | grep -q '"ok":true'; then
+              echo "Telegram send failed for $file"
+              exit 1
+            fi
+          done
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          rm -rf temp_dl temp_arch
