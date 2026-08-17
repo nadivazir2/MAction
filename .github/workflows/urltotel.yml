@@ -8,6 +8,10 @@ on:
         required: true
         type: string
 
+      package_name:
+        description: "Name of the Package"
+        required: true
+
       zip_password:
         description: "Password for archive (leave empty for no password)"
         required: false
@@ -73,7 +77,7 @@ jobs:
 
           7z a \
             -v${{ github.event.inputs.split_size }} \
-            output/sss.$(date +%Y%m%d_%H%M%S).7z \
+            output/${{ github.event.inputs.package_name }}.$(date +%Y%m%d_%H%M%S).7z \
             ./temp_dl/*
 
       - name: Upload to Telegram
