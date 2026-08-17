@@ -31,10 +31,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v5
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Dependencies
         run: |
