@@ -12,13 +12,7 @@ on:
         description: "Name of the Package"
         required: true
 
-      zip_password:
-        description: "Password for archive (leave empty for no password)"
-        required: false
-        default: ""
-        type: string
-
-      max_part_mb:
+      split_size:
         description: "Maximum size per part (MB)"
         required: false
         default: "20"
@@ -39,7 +33,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update -qq
-
+          
           sudo apt-get install -y \
             p7zip-full \
             curl \
@@ -80,7 +74,7 @@ jobs:
           mkdir output
 
           7z a \
-            -v40 \
+            -v${{ github.event.inputs.split_size }} \
             output/${{ github.event.inputs.package_name }}.$(date +%Y%m%d_%H%M%S).7z \
             ./temp_dl/*
 
