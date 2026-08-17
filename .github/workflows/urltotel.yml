@@ -71,67 +71,70 @@ jobs:
           echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
           echo "filepath=temp_dl/$FILENAME" >> "$GITHUB_OUTPUT"
 
-      - name: Create Split Archive
-        id: archive
+      - name: Compress and split
+        run: |
+          mkdir output
+
+          7z a \
+            -v${{ github.event.inputs.split_size }} \
+            output/${{ github.event.inputs.package_name }}.$(date +%Y%m%d_%H%M%S).7z \
+            ./temp_dl/*
+
+      - name: Upload to Telegram
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
         shell: bash
         run: |
-          set -euo pipefail
 
-          FILEPATH="${{ steps.download.outputs.filepath }}"
-          PASS="${{ github.event.inputs.zip_password }}"
-          THRESH_MB="${{ github.event.inputs.max_part_mb }}"
+          for file in output/*
+          do
 
-          if [[ -z "$THRESH_MB" || "$THRESH_MB" -le 0 || "$THRESH_MB" -gt 1900 ]]; then
-            THRESH_MB=1800
-          fi
+            echo ""
+            echo "================================="
+            echo "Uploading: $file"
+            echo "================================="
 
-          BASENAME=$(basename "$FILEPATH")
+            SUCCESS=0
 
-          cd temp_dl || exit 1
+            while [ $SUCCESS -eq 0 ]
+            do
 
-          ARCHIVE_BASE="${BASENAME%.*}_$(date +%Y%m%d_%H%M%S)"
+              RESPONSE=$(curl -s \
+                -F document=@"$file" \
+                "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument?chat_id=${CHAT_ID}")
 
-          if [ -n "$PASS" ]; then
-            7z a -p"$PASS" -mhe=on -mx=3 -v${THRESH_MB}m "../temp_arch/${ARCHIVE_BASE}.7z" "$BASENAME"
-          else
-            7z a -mx=3 -v${THRESH_MB}m "../temp_arch/${ARCHIVE_BASE}.7z" "$BASENAME"
-          fi
+              echo "$RESPONSE"
 
-          echo "archive_base=$ARCHIVE_BASE" >> "$GITHUB_OUTPUT"
+              OK=$(echo "$RESPONSE" | jq -r '.ok')
 
-      - name: List Archive Files
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Archive files created:"
-          ls -lah temp_arch
+              if [ "$OK" = "true" ]; then
 
-      - name: Send files to Telegram
-        shell: bash
-        run: |
-          set -euo pipefail
+                echo ""
+                echo "Upload successful."
 
-          shopt -s nullglob
-          FILES=(temp_arch/*)
+                SUCCESS=1
 
-          if [ ${#FILES[@]} -eq 0 ]; then
-            echo "No archive files found in temp_arch."
-            exit 1
-          fi
+              else
 
-          for file in "${FILES[@]}"; do
-            echo "Sending $file ..."
-            RESPONSE=$(curl -sS -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument" \
-              -F chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
-              -F document=@"$file" \
-              -F caption="Archive: $(basename "$file")")
+                ERROR_DESC=$(echo "$RESPONSE" | jq -r '.description')
 
-            echo "$RESPONSE"
+                RETRY_AFTER=$(echo "$RESPONSE" | jq -r '.parameters.retry_after // 10')
 
-            if ! echo "$RESPONSE" | grep -q '"ok":true'; then
-              echo "Telegram send failed for $file"
-              exit 1
-            fi
+                echo ""
+                echo "Upload failed:"
+                echo "$ERROR_DESC"
+
+                echo ""
+                echo "Retrying after ${RETRY_AFTER}s..."
+
+                sleep "$RETRY_AFTER"
+
+              fi
+
+            done
+
           done
 
       - name: Cleanup
