@@ -52,7 +52,7 @@ jobs:
             curl \
             jq \
             zip \
-            7z \
+            p7zip-full \
             python3 \
             python3-pip
 
