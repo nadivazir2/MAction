@@ -31,22 +31,7 @@ on:
         description: "Max Part Size (MB)"
         required: false
         type: string
-        default: "90"
-
-      upload_method:
-        description: "Upload Method"
-        required: true
-        type: choice
-        options:
-          - repository
-          - release
-        default: repository
-
-      release_tag:
-        description: "Release Tag"
-        required: false
-        type: string
-        default: ""
+        default: "40"
 
 permissions:
   contents: write
@@ -57,11 +42,6 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Install Dependencies
         shell: bash
         run: |
@@ -72,6 +52,7 @@ jobs:
             curl \
             jq \
             zip \
+            7z \
             python3 \
             python3-pip
 
@@ -147,75 +128,70 @@ jobs:
       - name: Split Large Files
         shell: bash
         run: |
-          THRESH_MB="${{ github.event.inputs.max_part_mb }}"
+          mkdir output
 
-          if [[ "$THRESH_MB" -le 0 || "$THRESH_MB" -gt 1900 ]]; then
-            THRESH_MB=1800
-          fi
+          7z a \
+            -v${{ github.event.inputs.max_part_mb }} \
+            output/spotify.$(date +%Y%m%d_%H%M%S).7z \
+            ./release_files/*
 
-          cd release_files || exit 1
+      - name: Upload to Telegram
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-          for FILE in *; do
-            [ -f "$FILE" ] || continue
+        shell: bash
+        run: |
 
-            FILESIZE=$(stat -c%s "$FILE")
-            THRESH_BYTES=$((THRESH_MB * 1024 * 1024))
+          for file in output/*
+          do
 
-            if [ "$FILESIZE" -gt "$THRESH_BYTES" ]; then
-              echo "Splitting: $FILE"
+            echo ""
+            echo "================================="
+            echo "Uploading: $file"
+            echo "================================="
 
-              BASE="${FILE%.*}"
+            SUCCESS=0
 
-              zip -r -s "${THRESH_MB}m" "${BASE}.zip" -- "$FILE"
+            while [ $SUCCESS -eq 0 ]
+            do
 
-              rm -f "$FILE"
-            fi
+              RESPONSE=$(curl -s \
+                -F document=@"$file" \
+                "https://api.telegram.org/bot${BOT_TOKEN}/sendDocument?chat_id=${CHAT_ID}")
+
+              echo "$RESPONSE"
+
+              OK=$(echo "$RESPONSE" | jq -r '.ok')
+
+              if [ "$OK" = "true" ]; then
+
+                echo ""
+                echo "Upload successful."
+
+                SUCCESS=1
+
+              else
+
+                ERROR_DESC=$(echo "$RESPONSE" | jq -r '.description')
+
+                RETRY_AFTER=$(echo "$RESPONSE" | jq -r '.parameters.retry_after // 10')
+
+                echo ""
+                echo "Upload failed:"
+                echo "$ERROR_DESC"
+
+                echo ""
+                echo "Retrying after ${RETRY_AFTER}s..."
+
+                sleep "$RETRY_AFTER"
+
+              fi
+
+            done
+
           done
 
-          cd ..
-
-      - name: Get Current Date
-        id: get_date
-        shell: bash
-        run: |
-          echo "date=$(date '+%Y-%m-%d %H:%M:%S')" >> "$GITHUB_OUTPUT"
-
-      - name: Push to Repository
-        if: github.event.inputs.upload_method == 'repository'
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          mkdir -p downloads
-
-          mv release_files/* downloads/ || true
-
-          git add downloads/
-
-          git commit -m "Media Download [skip ci]" || echo "Nothing to commit"
-
-          git push
-
-      - name: Upload to GitHub Releases
-        if: github.event.inputs.upload_method == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.release_tag != '' && github.event.inputs.release_tag || format('media-{0}', github.run_number) }}
-          name: "Spotify & SoundCloud Download"
-          body: |
-            Media Download Complete
-
-            URL: ${{ github.event.inputs.media_url }}
-            Format: ${{ github.event.inputs.output_format }}
-            Quality: ${{ github.event.inputs.audio_quality }}
-            Downloaded on: ${{ steps.get_date.outputs.date }}
-
-            Powered by Meli-Action ⚡
-          files: release_files/*
-
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cleanup
         if: always()
