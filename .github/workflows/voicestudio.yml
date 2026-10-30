@@ -12,7 +12,7 @@ jobs:
       MODEL_ID: deepdml/faster-whisper-large-v3-turbo-ct2
       MODEL_REVISION: 4df90f75321148c3a29a9e2351b7ddf8f5b115a8
 
-      PACKAGE_NAME: whisper-turbo
+      PACKAGE_NAME: whisper-large-v3-turbo
       PART_SIZE: 47185920
 
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
