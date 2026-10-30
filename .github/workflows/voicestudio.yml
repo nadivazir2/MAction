@@ -140,10 +140,11 @@ jobs:
               )
 
           required_files = [
-              "encoder.int8.onnx",
-              "decoder.int8.onnx",
-              "joiner.int8.onnx",
-              "tokens.txt"
+            "model.bin",
+            "config.json",
+            "preprocessor_config.json",
+            "tokenizer.json",
+            "vocabulary.json"
           ]
 
           print("Checking required files...")
