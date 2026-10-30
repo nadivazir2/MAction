@@ -9,10 +9,10 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      MODEL_ID: csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8
-      MODEL_REVISION: 2bda32ec70b097a55adaa07d9a7173915b43cc78
+      MODEL_ID: deepdml/faster-whisper-large-v3-turbo-ct2
+      MODEL_REVISION: 4df90f75321148c3a29a9e2351b7ddf8f5b115a8
 
-      PACKAGE_NAME: parakeet-tdt-v3
+      PACKAGE_NAME: whisper-turbo
       PART_SIZE: 47185920
 
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
